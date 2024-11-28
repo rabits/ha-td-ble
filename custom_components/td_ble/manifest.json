@@ -1,0 +1,20 @@
+{
+    "domain": "td_ble",
+    "name": "Transducers Direct BLE (Unofficial)",
+
+    "bluetooth": [{
+        "service_uuid": "cc4a6a80-51e0-11e3-b451-0002a5d5c51b",
+        "connectable": true
+    }],
+
+    "codeowners": ["@rabits"],
+    "config_flow": true,
+    "dependencies": ["bluetooth_adapters"],
+    "documentation": "https://github.com/rabits/ha-td-ble/wiki",
+    "integration_type": "device",
+    "iot_class": "local_push",
+    "issue_tracker": "https://github.com/rabits/ha-td-ble/issues",
+    "loggers": ["custom_components.td_ble"],
+
+    "version": "0.1.0"
+}
