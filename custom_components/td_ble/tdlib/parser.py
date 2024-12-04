@@ -78,6 +78,9 @@ def _decode_attr(
             if res > max_value:
                 res = None
         data: dict[str, float | None | str] = {name: res}
+
+        _LOGGER.debug("Parsed raw data: 0x%s : %s", raw_data.hex(), res)
+
         return data
 
     return handler
@@ -86,8 +89,8 @@ sensor_decoders: dict[
     str,
     Callable[[bytearray], dict[str, float | None | str]],
 ] = {
-    CHAR_PRESSURE: _decode_attr(name="pressure", format_type="h", scale=1.0 / 10.0),
-    CHAR_TEMPERATURE: _decode_attr(name="temperature", format_type="h", scale=1.0 / 100.0),
+    CHAR_PRESSURE: _decode_attr(name="pressure", format_type=">h", scale=1.0 / 10.0),
+    CHAR_TEMPERATURE: _decode_attr(name="temperature", format_type=">h", scale=1.0 / 100.0),
     CHAR_BATTERY: _decode_attr(name="battery", format_type="b", scale=1),
 }
 
@@ -193,6 +196,7 @@ class TDBluetoothDeviceData:
     async def _get_service_characteristics(
         self, client: BleakClient, device: TDDevice
     ) -> None:
+        _LOGGER.debug("Running _get_service_characteristics")
         svcs = client.services
         sensors = device.sensors
         for service in svcs:
@@ -201,6 +205,7 @@ class TDBluetoothDeviceData:
                 uuid_str = str(uuid)
 
                 if uuid in sensors_characteristics and uuid_str in sensor_decoders:
+                    _LOGGER.debug("Updating characteristic %s: %s", uuid_str, characteristic)
                     try:
                         data = await client.read_gatt_char(characteristic)
                     except BleakError as err:

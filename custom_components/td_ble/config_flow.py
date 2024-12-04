@@ -146,7 +146,8 @@ class TDConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_create_entry(title=discovery.name, data={})
 
         current_addresses = self._async_current_ids()
-        for discovery_info in async_discovered_service_info(self.hass):
+        servinfo = async_discovered_service_info(self.hass)
+        for discovery_info in servinfo:
             address = discovery_info.address
             if address in current_addresses or address in self._discovered_devices:
                 continue
@@ -166,6 +167,8 @@ class TDConfigFlow(ConfigFlow, domain=DOMAIN):
             self._discovered_devices[address] = Discovery(name, discovery_info, device)
 
         if not self._discovered_devices:
+            for discovery_info in servinfo:
+                _LOGGER.warning("No supported devices located: Unsupported device '%s' manufacturer data: %s", discovery_info.name, discovery_info.manufacturer_data)
             return self.async_abort(reason="no_devices_found")
 
         titles = { address:
