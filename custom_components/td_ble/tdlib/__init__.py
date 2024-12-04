@@ -2,28 +2,16 @@
 
 from __future__ import annotations
 
-from sensor_state_data import (
-    DeviceKey,
-    SensorDescription,
-    SensorDeviceClass,
-    SensorDeviceInfo,
-    SensorUpdate,
-    SensorValue,
-    Units,
-)
-
-from .parser import TDBluetoothDeviceData, TDSensor
+from .device_type import TDDeviceType
+from .const import TD_MANUFACTURER_ID, TD_MANUFACTURER_SERIAL
+from .parser import TDBluetoothDeviceData, TDDevice
 
 __version__ = "0.1.0"
 
 __all__ = [
-    "TDSensor",
     "TDBluetoothDeviceData",
-    "DeviceKey",
-    "SensorDescription",
-    "SensorDeviceClass",
-    "SensorDeviceInfo",
-    "SensorUpdate",
-    "SensorValue",
-    "Units",
+    "TDDevice",
+    "TDDeviceType",
+    "TD_MANUFACTURER_ID",
+    "TD_MANUFACTURER_SERIAL",
 ]

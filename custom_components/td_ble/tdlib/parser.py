@@ -2,119 +2,269 @@
 
 from __future__ import annotations
 
+import struct
 import logging
 
-from bleak import BleakError, BLEDevice
-from bleak_retry_connector import (
-    BleakClientWithServiceCache,
-    establish_connection,
-    retry_bluetooth_connection_error,
-)
+import sys
+import asyncio
+import dataclasses
+from collections import namedtuple
+from functools import partial
+from typing import Callable, Optional
 
-from bluetooth_data_tools import short_address
-from bluetooth_sensor_state_data import BluetoothData
-from home_assistant_bluetooth import BluetoothServiceInfo
-from sensor_state_data import SensorDeviceClass, SensorUpdate, Units
-from sensor_state_data.enum import StrEnum
+from async_interrupt import interrupt
+from bleak import BleakClient, BleakError
+from bleak.backends.device import BLEDevice
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
+if sys.version_info[:2] < (3, 11):
+    from async_timeout import timeout as asyncio_timeout
+else:
+    from asyncio import timeout as asyncio_timeout
+
+from .device_type import TDDeviceType
 from .const import (
     TD_MANUFACTURER_ID,
     TD_MANUFACTURER_SERIAL,
-    DEFAULT_UPDATE_INTERVAL_SECONDS,
-    CHARACTERISTIC_PRESSURE,
-    CHARACTERISTIC_BATTERY,
-)
 
-class TDSensor(StrEnum):
-    PRESSURE = "pressure"
-    BATTERY_PERCENT = "battery_percent"
-    SIGNAL_STRENGTH = "signal_strength"
+    DEFAULT_UPDATE_INTERVAL_SECONDS,
+    DEFAULT_MAX_UPDATE_ATTEMPTS,
+
+    CHAR_MODEL_NUMBER,
+    CHAR_DEVICE_NAME,
+    CHAR_SERIAL_NUMBER,
+    CHAR_FIRMWARE_REV,
+    CHAR_MANUFACTURER,
+
+    CHAR_PRESSURE,
+    CHAR_BATTERY,
+    CHAR_TEMPERATURE,
+
+    UPDATE_TIMEOUT,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
 
-class TDBluetoothDeviceData(BluetoothData):
-    """Data for Transducers Direct BLE sensors."""
+class DisconnectedError(Exception):
+    """Disconnected from device."""
 
-    def _start_update(self, service_info: BluetoothServiceInfo) -> None:
-        """Update from BLE advertisement data."""
-        _LOGGER.debug("Parsing TD BLE advertisement data: %s", service_info)
-        manufacturer_data = service_info.manufacturer_data
-        address = service_info.address
-        if TD_MANUFACTURER_ID not in manufacturer_data:
-            _LOGGER.debug("Unsupported device '%s' manufacturer data: %s", service_info.name, manufacturer_data)
-            return None
+Characteristic = namedtuple("Characteristic", ["uuid", "name", "format"])
+device_info_characteristics = [
+    Characteristic(CHAR_MANUFACTURER, "manufacturer", "utf-8"),
+    Characteristic(CHAR_SERIAL_NUMBER, "serial_nr", "utf-8"),
+    Characteristic(CHAR_DEVICE_NAME, "device_name", "utf-8"),
+    Characteristic(CHAR_FIRMWARE_REV, "firmware_rev", "utf-8"),
+]
 
-        # TODO: Right now device_serial is not used
-        if TD_MANUFACTURER_SERIAL in manufacturer_data:
-            _LOGGER.debug("Parsing TD sensor: %s", data)
-            data = manufacturer_data[TD_MANUFACTURER_SERIAL]
-            device_serial = "<NO SERIAL>"
-            if 0x00 in data and data.index(0x00) > 1:
-                device_serial = str(data[0:data.index(0x00)])
+sensors_characteristics = [
+    CHAR_TEMPERATURE,
+    CHAR_BATTERY,
+    CHAR_PRESSURE,
+]
 
-        self.set_device_manufacturer("Transducers Direct, LLC")
+def _decode_attr(
+    name: str, format_type: str, scale: float, max_value: Optional[float] = None
+) -> Callable[[bytearray], dict[str, float | None | str]]:
+    """same as base decoder, but expects only one value.. for real"""
 
-        # TODO: add moar supported device types and figure out how to detect them
-        self.set_device_type("TDWLB-LC-RPPF")
+    def handler(raw_data: bytearray) -> dict[str, float | None | str]:
+        val = struct.unpack(format_type, raw_data)
+        res: float | None = None
+        if len(val) == 1:
+            res = val[0] * scale
+        if res is not None and max_value is not None:
+            # Verify that the result is not above the maximum allowed value
+            if res > max_value:
+                res = None
+        data: dict[str, float | None | str] = {name: res}
+        return data
 
-        name = f"TDWLB-LC-RPPF {short_address(address)}"
-        self.set_device_name(name)
-        self.set_title(name)
+    return handler
 
-        self.set_precision(2)
+sensor_decoders: dict[
+    str,
+    Callable[[bytearray], dict[str, float | None | str]],
+] = {
+    CHAR_PRESSURE: _decode_attr(name="pressure", format_type="h", scale=1.0 / 10.0),
+    CHAR_TEMPERATURE: _decode_attr(name="temperature", format_type="h", scale=1.0 / 100.0),
+    CHAR_BATTERY: _decode_attr(name="battery", format_type="b", scale=1),
+}
 
-    def poll_needed(
-        self, service_info: BluetoothServiceInfo, last_poll: float | None
-    ) -> bool:
-        """
-        This is called every time we get a service_info for a device. It means the
-        device is working and online.
-        """
-        if last_poll is None:
-            return True
-        # TODO: Add a way to change update interval from provided options
-        update_interval = DEFAULT_UPDATE_INTERVAL_SECONDS
-        return last_poll > update_interval
+@dataclasses.dataclass
+class TDDeviceInfo:
+    """Response data with information about the TD device without sensors."""
 
-    @retry_bluetooth_connection_error()
-    async def _get_payload(self, client: BleakClientWithServiceCache) -> None:
-        """Get the payload from the sensor using its gatt_characteristics."""
-        battery_char = client.services.get_characteristic(CHARACTERISTIC_BATTERY)
-        battery_payload = await client.read_gatt_char(battery_char)
+    manufacturer: str = ""
+    fw_version: str = ""
+    model: TDDeviceType = TDDeviceType.UNKNOWN
+    name: str = ""
+    identifier: str = ""
+    address: str = ""
+    did_first_sync: bool = False
 
-        pressure_char = client.services.get_characteristic(CHARACTERISTIC_PRESSURE)
-        pressure_payload = await client.read_gatt_char(pressure_char)
+    def friendly_name(self) -> str:
+        """Generate a name for the device."""
 
-        self.update_sensor(
-            str(TDSensor.PRESSURE),
-            Units.PRESSURE_PSI,
-            pressure_payload[0],
-            SensorDeviceClass.PRESSURE,
-            "Pressure",
-        )
-        self.update_sensor(
-            str(TDSensor.BATTERY_PERCENT),
-            Units.PERCENTAGE,
-            battery_payload[0],
-            SensorDeviceClass.BATTERY,
-            "Battery",
-        )
-        _LOGGER.debug("Successfully read active gatt characters")
+        return f"TD {self.model.product_name}"
 
-    async def async_poll(self, ble_device: BLEDevice) -> SensorUpdate:
-        """
-        Poll the device to retrieve any values we can't get from passive listening.
-        """
-        _LOGGER.debug("Polling TD device: %s", ble_device.address)
-        client = await establish_connection(
-            BleakClientWithServiceCache, ble_device, ble_device.address
+
+@dataclasses.dataclass
+class TDDevice(TDDeviceInfo):
+    """Response data with information about the TD device"""
+
+    sensors: dict[str, str | float | None] = dataclasses.field(
+        default_factory=lambda: {}
+    )
+
+class TDBluetoothDeviceData:
+    """Data for TD BLE sensors."""
+
+    def __init__(
+        self,
+        is_metric: bool = True,
+        max_attempts: int = DEFAULT_MAX_UPDATE_ATTEMPTS,
+    ) -> None:
+        """Initialize the TD BLE sensor data object."""
+        self.is_metric = is_metric
+        self.device_info = TDDeviceInfo()
+        self.max_attempts = max_attempts
+
+    def set_max_attempts(self, max_attempts: int) -> None:
+        """Set the number of attempts."""
+        self.max_attempts = max_attempts
+
+    async def _get_device_characteristics(
+        self, client: BleakClient, device: TDDevice
+    ) -> None:
+        device_info = self.device_info
+        device_info.address = client.address
+        did_first_sync = device_info.did_first_sync
+
+        # We need to fetch model to determ what to fetch.
+        if not did_first_sync:
+            try:
+                data = await client.read_gatt_char(CHAR_MODEL_NUMBER)
+            except BleakError as err:
+                _LOGGER.debug("Get device characteristics exception: %s", err)
+                return
+
+            device_info.model = TDDeviceType.from_raw_value(data.decode("utf-8").strip())
+            if device_info.model == TDDeviceType.UNKNOWN:
+                _LOGGER.warning("Could not map model number to model name, most likely an unsupported device: %s", data.decode("utf-8"))
+
+        for characteristic in device_info_characteristics:
+            if did_first_sync and characteristic.name != "firmware_rev":
+                # Only the fw_version can change once set, so we can skip the rest.
+                continue
+
+            try:
+                data = await client.read_gatt_char(characteristic.uuid)
+            except BleakError as err:
+                _LOGGER.debug("Get device characteristics exception: %s", err)
+                continue
+            if characteristic.name == "manufacturer":
+                device_info.manufacturer = data.decode(characteristic.format)
+            elif characteristic.name == "firmware_rev":
+                device_info.fw_version = data.decode(characteristic.format)
+            elif characteristic.name == "device_name":
+                device_info.name = data.decode(characteristic.format)
+            elif characteristic.name == "serial_nr":
+                identifier = data.decode(characteristic.format)
+                # Some devices return `Serial Number` on Mac instead of
+                # the actual serial number.
+                if identifier != "Serial Number":
+                    device_info.identifier = identifier
+            else:
+                _LOGGER.debug("Characteristics not handled: %s %s", characteristic.name, characteristic.uuid)
+
+        # In some cases the device name will be empty, for example when using a Mac.
+        if not device_info.name:
+            device_info.name = device_info.friendly_name()
+
+        if device_info.model:
+            device_info.did_first_sync = True
+
+        # Copy the cached device_info to device
+        for field in dataclasses.fields(device_info):
+            name = field.name
+            setattr(device, name, getattr(device_info, name))
+
+    async def _get_service_characteristics(
+        self, client: BleakClient, device: TDDevice
+    ) -> None:
+        svcs = client.services
+        sensors = device.sensors
+        for service in svcs:
+            for characteristic in service.characteristics:
+                uuid = characteristic.uuid
+                uuid_str = str(uuid)
+
+                if uuid in sensors_characteristics and uuid_str in sensor_decoders:
+                    try:
+                        data = await client.read_gatt_char(characteristic)
+                    except BleakError as err:
+                        _LOGGER.debug("Get service characteristics exception: %s", err)
+                        continue
+
+                    sensor_data = sensor_decoders[uuid_str](data)
+                    sensors.update(sensor_data)
+
+    def _handle_disconnect(
+        self, disconnect_future: asyncio.Future[bool], client: BleakClient
+    ) -> None:
+        """Handle disconnect from device."""
+        _LOGGER.debug("Disconnected from %s", client.address)
+        if not disconnect_future.done():
+            disconnect_future.set_result(True)
+
+    async def update_device(self, ble_device: BLEDevice) -> TDDevice:
+        """Connects to the device through BLE and retrieves relevant data"""
+        for attempt in range(self.max_attempts):
+            _LOGGER.debug("Updating %s (attempt %d)", ble_device.address, attempt)
+            is_final_attempt = attempt == self.max_attempts - 1
+            try:
+                return await self._update_device(ble_device)
+            except DisconnectedError:
+                if is_final_attempt:
+                    raise
+                _LOGGER.debug("Unexpectedly disconnected from %s", ble_device.address)
+            except BleakError as err:
+                if is_final_attempt:
+                    raise
+                _LOGGER.debug("Bleak error: %s", err)
+        raise RuntimeError("Should not reach this point")
+
+    async def _update_device(self, ble_device: BLEDevice) -> TDDevice:
+        """Connects to the device through BLE and retrieves relevant data"""
+        device = TDDevice()
+        loop = asyncio.get_running_loop()
+        disconnect_future = loop.create_future()
+        client: BleakClientWithServiceCache = (
+            await establish_connection(
+                BleakClientWithServiceCache,
+                ble_device,
+                ble_device.address,
+                disconnected_callback=partial(
+                    self._handle_disconnect, disconnect_future
+                ),
+            )
         )
         try:
-            await self._get_payload(client)
+            async with interrupt(
+                disconnect_future,
+                DisconnectedError,
+                f"Disconnected from {client.address}",
+            ), asyncio_timeout(UPDATE_TIMEOUT):
+                await self._get_device_characteristics(client, device)
+                await self._get_service_characteristics(client, device)
         except BleakError as err:
-            _LOGGER.warning(f"Reading gatt characters failed with err: {err}")
+            if "not found" in str(err):  # In future bleak this is a named exception
+                # Clear the char cache since a char is likely
+                # missing from the cache
+                await client.clear_cache()
+            raise
         finally:
             await client.disconnect()
-            _LOGGER.debug("Disconnected from active bluetooth client")
-        return self._finish_update()
+
+        return device
