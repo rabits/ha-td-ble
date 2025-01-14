@@ -20,6 +20,7 @@ type TDConfigEntry = ConfigEntry[ActiveBluetoothProcessorCoordinator]
 
 async def async_setup_entry(hass: HomeAssistant, entry: TDConfigEntry) -> bool:
     """Set up Transducers Direct BLE device from a config entry."""
+    _LOGGER.debug("Running async_setup_entry")
     coordinator = TDBLEDataUpdateCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
 
@@ -34,4 +35,5 @@ async def async_setup_entry(hass: HomeAssistant, entry: TDConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: TDBLEConfigEntry) -> bool:
     """Unload a config entry."""
+    _LOGGER.debug("Running async_unload_entry")
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

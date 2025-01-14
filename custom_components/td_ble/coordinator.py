@@ -29,6 +29,7 @@ class TDBLEDataUpdateCoordinator(DataUpdateCoordinator[TDDevice]):
 
     def __init__(self, hass: HomeAssistant, entry: TDBLEConfigEntry) -> None:
         """Initialize the coordinator."""
+        _LOGGER.debug("Init coordinator")
         self.td = TDBluetoothDeviceData(hass.config.units is METRIC_SYSTEM)
         try:
             super().__init__(
@@ -50,6 +51,7 @@ class TDBLEDataUpdateCoordinator(DataUpdateCoordinator[TDDevice]):
 
     async def _async_setup(self) -> None:
         """Set up the coordinator."""
+        _LOGGER.debug("Executing Coordinator._async_setup")
         address = self.config_entry.unique_id
 
         assert address is not None
@@ -66,6 +68,7 @@ class TDBLEDataUpdateCoordinator(DataUpdateCoordinator[TDDevice]):
 
     async def _async_update_data(self) -> TDDevice:
         """Get data from TD BLE."""
+        _LOGGER.debug("Executing Coordinator._async_update_data")
         if getattr(self, "ble_device", None) is None:
             address = self.config_entry.unique_id
             self.ble_device = bluetooth.async_ble_device_from_address(self.hass, address)

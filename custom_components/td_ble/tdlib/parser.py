@@ -16,6 +16,7 @@ from async_interrupt import interrupt
 from bleak import BleakClient, BleakError
 from bleak.backends.device import BLEDevice
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+from bleak_retry_connector import close_stale_connections_by_address
 
 if sys.version_info[:2] < (3, 11):
     from async_timeout import timeout as asyncio_timeout
@@ -37,6 +38,7 @@ from .const import (
     CHAR_MANUFACTURER,
 
     CHAR_PRESSURE,
+    CHAR_MAXPRESSURE,
     CHAR_BATTERY,
     CHAR_TEMPERATURE,
 
@@ -61,6 +63,7 @@ sensors_characteristics = [
     CHAR_TEMPERATURE,
     CHAR_BATTERY,
     CHAR_PRESSURE,
+    CHAR_MAXPRESSURE,
 ]
 
 def _decode_attr(
@@ -90,6 +93,7 @@ sensor_decoders: dict[
     Callable[[bytearray], dict[str, float | None | str]],
 ] = {
     CHAR_PRESSURE: _decode_attr(name="pressure", format_type=">h", scale=1.0 / 10.0),
+    CHAR_MAXPRESSURE: _decode_attr(name="maxpressure", format_type=">h", scale=1.0 / 10.0),
     CHAR_TEMPERATURE: _decode_attr(name="temperature", format_type=">h", scale=1.0 / 100.0),
     CHAR_BATTERY: _decode_attr(name="battery", format_type="b", scale=1),
 }
@@ -129,6 +133,7 @@ class TDBluetoothDeviceData:
         max_attempts: int = DEFAULT_MAX_UPDATE_ATTEMPTS,
     ) -> None:
         """Initialize the TD BLE sensor data object."""
+        _LOGGER.debug("Created new TDBluetoothDeviceData")
         self.is_metric = is_metric
         self.device_info = TDDeviceInfo()
         self.max_attempts = max_attempts
@@ -140,6 +145,7 @@ class TDBluetoothDeviceData:
     async def _get_device_characteristics(
         self, client: BleakClient, device: TDDevice
     ) -> None:
+        _LOGGER.debug("Executing TDBluetoothDeviceData._get_device_characteristics")
         device_info = self.device_info
         device_info.address = client.address
         did_first_sync = device_info.did_first_sync
@@ -196,15 +202,14 @@ class TDBluetoothDeviceData:
     async def _get_service_characteristics(
         self, client: BleakClient, device: TDDevice
     ) -> None:
-        _LOGGER.debug("Running _get_service_characteristics")
+        _LOGGER.debug("Executing TDBluetoothDeviceData._get_service_characteristics")
         svcs = client.services
         sensors = device.sensors
         for service in svcs:
             for characteristic in service.characteristics:
-                uuid = characteristic.uuid
-                uuid_str = str(uuid)
+                uuid_str = str(characteristic.uuid)
 
-                if uuid in sensors_characteristics and uuid_str in sensor_decoders:
+                if uuid_str in sensors_characteristics and uuid_str in sensor_decoders:
                     _LOGGER.debug("Updating characteristic %s: %s", uuid_str, characteristic)
                     try:
                         data = await client.read_gatt_char(characteristic)
@@ -245,6 +250,7 @@ class TDBluetoothDeviceData:
         device = TDDevice()
         loop = asyncio.get_running_loop()
         disconnect_future = loop.create_future()
+        await close_stale_connections_by_address(ble_device.address)
         client: BleakClientWithServiceCache = (
             await establish_connection(
                 BleakClientWithServiceCache,

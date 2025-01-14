@@ -51,6 +51,12 @@ SENSORS_MAPPING_TEMPLATE: dict[str, SensorEntityDescription] = {
         native_unit_of_measurement=UnitOfPressure.PSI,
         state_class=SensorStateClass.MEASUREMENT,
     ),
+    "maxpressure": SensorEntityDescription(
+        key="maxpressure",
+        device_class=SensorDeviceClass.PRESSURE,
+        native_unit_of_measurement=UnitOfPressure.PSI,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
     "signal_strength": SensorEntityDescription(
         key="signal_strength",
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
@@ -72,6 +78,7 @@ SENSORS_MAPPING_TEMPLATE: dict[str, SensorEntityDescription] = {
 @callback
 def async_migrate(hass: HomeAssistant, address: str, sensor_name: str) -> None:
     """Migrate entities to new unique ids (with BLE Address)."""
+    _LOGGER.debug("Migrating sensor '%s'", sensor_name)
     ent_reg = er.async_get(hass)
     unique_id_trailer = f"_{sensor_name}"
     new_unique_id = f"{address}{unique_id_trailer}"
@@ -109,6 +116,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the TD BLE sensors."""
+    _LOGGER.debug("Setup entity")
     is_metric = hass.config.units is METRIC_SYSTEM
 
     coordinator = entry.runtime_data

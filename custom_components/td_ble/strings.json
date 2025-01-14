@@ -23,6 +23,9 @@
     "sensor": {
       "pressure": {
         "name": "Pressure"
+      },
+      "maxpressure": {
+        "name": "Max Pressure"
       }
     }
   }
