@@ -14,7 +14,7 @@ Recognized devices:
 
 Sorry, limited support and no warranty - you on your own and I take no responsibility for any of
 your actions. So make sure you know what you doing for each and every step - otherwise you can't
-use the provided information in this repository or integration.
+use the provided information or integration from this repository.
 
 In case you see some issues with your device after using this integration - Transducers Direct
 support could be unable to help you. Author of the integration is not related to Transducers Direct
@@ -29,3 +29,10 @@ Please refer to the wiki page to find more info: https://github.com/rabits/ha-td
 ## Funding
 
 Work on this integration was funded by a member of community.home-assistant.io forum. Thank you!
+
+## Side notes
+
+During initial phase we quickly figured out that regular approach of polling the device will not
+work, because device was very unresponsive to gatt reads, connections and eventually become
+unavailable to connection for some reason. So we switched to persistent connection, although that
+could lead to quicker battery drain.

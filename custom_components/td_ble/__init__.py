@@ -36,4 +36,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: TDConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: TDBLEConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug("Running async_unload_entry")
+    coord = entry.runtime_data
+    await coord.disconnect()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

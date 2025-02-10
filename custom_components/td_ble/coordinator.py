@@ -30,7 +30,7 @@ class TDBLEDataUpdateCoordinator(DataUpdateCoordinator[TDDevice]):
     def __init__(self, hass: HomeAssistant, entry: TDBLEConfigEntry) -> None:
         """Initialize the coordinator."""
         _LOGGER.debug("Init coordinator")
-        self.td = TDBluetoothDeviceData(hass.config.units is METRIC_SYSTEM)
+        self.td = TDBluetoothDeviceData(hass.config.units is METRIC_SYSTEM, persistent=True)
         try:
             super().__init__(
                 hass,
@@ -79,3 +79,10 @@ class TDBLEDataUpdateCoordinator(DataUpdateCoordinator[TDDevice]):
             raise UpdateFailed(f"Unable to fetch data: {err}") from err
 
         return data
+
+    async def disconnect(self):
+        if self.td == None:
+            _LOGGER.error("Device has no connection")
+            return
+
+        await self.td.disconnect()
